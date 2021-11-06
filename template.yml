@@ -20,7 +20,7 @@ Parameters:
     MinLength: '8'
     Default: 'S3cretPwd99'
     Type: String
-    NoEcho: true
+    # NoEcho: true
   
   EC2AMI:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -43,6 +43,16 @@ Resources:
       Tags:
         - Key: Name
           Value: PublicSubnet1
+  
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2
 
   IGW:
     Type: AWS::EC2::InternetGateway
@@ -57,18 +67,37 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
+  
+  RouteTablePublicSubnet2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
 
   RouteTableAssociationPublicSubnet1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref RouteTablePublicSubnet1
+  
+  RouteTableAssociationPublicSubnet2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTablePublicSubnet2
 
   RouteTablePublicSubnet1InternetRoute:
     Type: AWS::EC2::Route
     DependsOn: IGWAttach
     Properties:
       RouteTableId: !Ref RouteTablePublicSubnet1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+  
+  RouteTablePublicSubnet2InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttach
+    Properties:
+      RouteTableId: !Ref RouteTablePublicSubnet2
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref IGW
   
@@ -109,6 +138,7 @@ Resources:
         }
       RouteTableIds:
         - !Ref RouteTablePublicSubnet1
+        - !Ref RouteTablePublicSubnet2
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
       VpcEndpointType: Gateway
       VpcId: !Ref VPC
@@ -120,6 +150,7 @@ Resources:
       DBSubnetGroupDescription: DB Subnet Group
       SubnetIds: 
         - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
   
   # custdb
   CustDBInstance:
@@ -130,10 +161,13 @@ Resources:
       AllocatedStorage: "20"
       StorageType: gp2
       Engine: MySQL
+      EngineVersion: 5.7.34
       MasterUsername: "master"
       MasterUserPassword: !Ref DBPassword
       DBName: custdb
       BackupRetentionPeriod: 0
+      MultiAZ: false
+      AvailabilityZone: !Select [ 0, !GetAZs ]
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref WorkshopSG
@@ -150,10 +184,13 @@ Resources:
       AllocatedStorage: "20"
       StorageType: gp2
       Engine: MySQL
+      EngineVersion: 5.7.34
       MasterUsername: "master"
       MasterUserPassword: !Ref DBPassword
       DBName: custsitedb
       BackupRetentionPeriod: 0
+      MultiAZ: false
+      AvailabilityZone: !Select [ 0, !GetAZs ]
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref WorkshopSG
@@ -173,18 +210,25 @@ Resources:
           - |
             #! /bin/bash
             yum update -y
-            yum install -y wget mysql-devel mysql 
+            yum install -y wget mysql-devel mysql
 
-            wget -o ./custdb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custdb.sql
-            wget -o ./custsitedb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custsitedb.sql
+            wget -O ./custdb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custdb.sql
+            wget -O ./custsitedb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custsitedb.sql
+
             chmod +x ./custdb.sql
             chmod +x ./custsitedb.sql
 
-            mysql -f -u master -h ${CustDBEndpoint} --password="S3cretPwd99" < ./custdb.sql
-            mysql -f -u master -h ${CustSiteDBEndpoint} --password="S3cretPwd99" < ./custsitedb.sql
+            mysql -f -u master -h ${CustDBEndpoint} --password="${DBPassword}" < ./custdb.sql
+            mysql -f -u master -h ${CustSiteDBEndpoint} --password="${DBPassword}" < ./custsitedb.sql
+
+            wget -O ./agg_data_job.py https://raw.githubusercontent.com/unirt/salesdb/master/agg_data_job.py
+            sed -e '10i OUTPUT_DIR = \"s3:\/\/${S3BucketName}\/outputs\/customer_dim\"' ./agg_data_job.py
+            aws s3 cp ./agg_data_job.py s3://${S3BucketName}/
           - {
               CustDBEndpoint: !GetAtt CustDBInstance.Endpoint.Address,
-              CustSiteDBEndpoint: !GetAtt CustSiteDBInstance.Endpoint.Address
+              CustSiteDBEndpoint: !GetAtt CustSiteDBInstance.Endpoint.Address,
+              DBPassword: !Ref DBPassword,
+              S3BucketName: !Join [ '-', [!Ref S3BucketName, !Ref 'AWS::AccountId'] ]
             }
       SecurityGroupIds:
         - !Ref WorkshopSG
@@ -213,3 +257,14 @@ Resources:
           - 'arn:aws:iam::aws:policy/AmazonElasticMapReduceFullAccess'
           - 'arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess'
           - 'arn:aws:iam::aws:policy/AmazonAthenaFullAccess'
+
+Outputs:
+  CustDBInstanceId:
+    Description: CustDBInstance ID
+    Value: !Ref CustDBInstance
+  CustSiteDBInstanceId:
+    Description: CustSiteDBInstance ID
+    Value: !Ref CustSiteDBInstance
+  S3BucketArn:
+    Description: S3 Bucket ARN
+    Value: !GetAtt S3Bucket.Arn
