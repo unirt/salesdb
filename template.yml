@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: glue handson template
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: S3 Bucket Name
+    Default: 'glue-handson'
+  
+  StackPrefix:
+    Type: String
+    Description: Prefix to set to IAM Role Resources
+    Default: 'glue-handson'
+  
+  DBPassword:
+    AllowedPattern: '[a-zA-Z0-9]+'
+    ConstraintDescription: must contain only alphanumeric characters. Must have length 8-41.
+    Description: Database admin account password.
+    MaxLength: '41'
+    MinLength: '8'
+    Default: 'S3cretPwd99'
+    Type: String
+    NoEcho: true
+  
+  EC2AMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+
+  IGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: 
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+
+  RouteTablePublicSubnet1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  RouteTableAssociationPublicSubnet1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTablePublicSubnet1
+
+  RouteTablePublicSubnet1InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttach
+    Properties:
+      RouteTableId: !Ref RouteTablePublicSubnet1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+  
+  WorkshopSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: WorkshopSG
+      GroupDescription: SG for workshop
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  WorkshopSGSelfReference:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WorkshopSG
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref WorkshopSG
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      AccessControl: BucketOwnerFullControl
+      BucketName: !Join [ '-', [!Ref S3BucketName, !Ref 'AWS::AccountId'] ]
+  
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument: {
+            "Statement":[{
+                "Effect":"Allow",
+                "Principal": "*",
+                "Action":"*",
+                "Resource":"*"
+            }]
+        }
+      RouteTableIds:
+        - !Ref RouteTablePublicSubnet1
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      VpcId: !Ref VPC
+  
+  # DB
+  DBSubnetGroup: 
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: DB Subnet Group
+      SubnetIds: 
+        - !Ref PublicSubnet1
+  
+  # custdb
+  CustDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: "20"
+      StorageType: gp2
+      Engine: MySQL
+      MasterUsername: "master"
+      MasterUserPassword: !Ref DBPassword
+      DBName: custdb
+      BackupRetentionPeriod: 0
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref WorkshopSG
+      Tags:
+        - Key: Name
+          Value: custdb
+
+  # custsitedb
+  CustSiteDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: "20"
+      StorageType: gp2
+      Engine: MySQL
+      MasterUsername: "master"
+      MasterUserPassword: !Ref DBPassword
+      DBName: custsitedb
+      BackupRetentionPeriod: 0
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref WorkshopSG
+      Tags:
+        - Key: Name
+          Value: custsitedb
+
+  # EC2 for init DB
+  EC2ForInitDB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref EC2AMI
+      InstanceType: t3.micro
+      SubnetId: !Ref PublicSubnet1
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #! /bin/bash
+            yum update -y
+            yum install -y wget mysql-devel mysql 
+
+            wget -o ./custdb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custdb.sql
+            wget -o ./custsitedb.sql https://raw.githubusercontent.com/unirt/salesdb/master/custsitedb.sql
+            chmod +x ./custdb.sql
+            chmod +x ./custsitedb.sql
+
+            mysql -f -u master -h ${CustDBEndpoint} --password="S3cretPwd99" < ./custdb.sql
+            mysql -f -u master -h ${CustSiteDBEndpoint} --password="S3cretPwd99" < ./custsitedb.sql
+          - {
+              CustDBEndpoint: !GetAtt CustDBInstance.Endpoint.Address,
+              CustSiteDBEndpoint: !GetAtt CustSiteDBInstance.Endpoint.Address
+            }
+      SecurityGroupIds:
+        - !Ref WorkshopSG
+      Tags:
+        - Key: Name
+          Value: EC2ForInitDB
+
+  # IAM
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - glue.amazonaws.com
+                  - states.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        RoleName: !Join [ '-', [!Ref StackPrefix, 'GlueServiceRole'] ]
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+          - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+          - 'arn:aws:iam::aws:policy/AmazonElasticMapReduceFullAccess'
+          - 'arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess'
+          - 'arn:aws:iam::aws:policy/AmazonAthenaFullAccess'
