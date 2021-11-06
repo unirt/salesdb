@@ -40,6 +40,7 @@ Resources:
       CidrBlock: 10.0.0.0/24
       VpcId: !Ref VPC
       AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: PublicSubnet1
@@ -50,6 +51,7 @@ Resources:
       CidrBlock: 10.0.1.0/24
       VpcId: !Ref VPC
       AvailabilityZone: !Select [ 1, !GetAZs ]
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: PublicSubnet2
@@ -110,6 +112,11 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+          FromPort: 22
+          ToPort: 22
 
   WorkshopSGSelfReference:
     Type: AWS::EC2::SecurityGroupIngress
@@ -222,7 +229,7 @@ Resources:
             mysql -f -u master -h ${CustSiteDBEndpoint} --password="${DBPassword}" < ./custsitedb.sql
 
             wget -O ./agg_data_job.py https://raw.githubusercontent.com/unirt/salesdb/master/agg_data_job.py
-            sed -e '10i OUTPUT_DIR = \"s3:\/\/${S3BucketName}\/outputs\/customer_dim\"' ./agg_data_job.py
+            sed -i -e '10i OUTPUT_DIR = \"s3:\/\/${S3BucketName}\/outputs\/customer_dim\"' ./agg_data_job.py
             aws s3 cp ./agg_data_job.py s3://${S3BucketName}/
           - {
               CustDBEndpoint: !GetAtt CustDBInstance.Endpoint.Address,
@@ -232,6 +239,7 @@ Resources:
             }
       SecurityGroupIds:
         - !Ref WorkshopSG
+      IamInstanceProfile: !Ref S3FullAccessInstanceProfile
       Tags:
         - Key: Name
           Value: EC2ForInitDB
@@ -257,6 +265,28 @@ Resources:
           - 'arn:aws:iam::aws:policy/AmazonElasticMapReduceFullAccess'
           - 'arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess'
           - 'arn:aws:iam::aws:policy/AmazonAthenaFullAccess'
+  
+  S3FullAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - ec2.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        RoleName: !Join [ '-', [!Ref StackPrefix, 'S3FullAccessRole'] ]
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+  
+  S3FullAccessInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref S3FullAccessRole
 
 Outputs:
   CustDBInstanceId:
