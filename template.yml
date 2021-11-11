@@ -239,7 +239,7 @@ Resources:
             }
       SecurityGroupIds:
         - !Ref WorkshopSG
-      IamInstanceProfile: !Ref S3FullAccessInstanceProfile
+      IamInstanceProfile: !Ref InitDBInstanceProfile
       Tags:
         - Key: Name
           Value: EC2ForInitDB
@@ -266,7 +266,7 @@ Resources:
           - 'arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess'
           - 'arn:aws:iam::aws:policy/AmazonAthenaFullAccess'
   
-  S3FullAccessRole:
+  InitDBInstanceRole:
     Type: AWS::IAM::Role
     Properties:
         AssumeRolePolicyDocument:
@@ -278,15 +278,16 @@ Resources:
                   - ec2.amazonaws.com
               Action:
                 - sts:AssumeRole
-        RoleName: !Join [ '-', [!Ref StackPrefix, 'S3FullAccessRole'] ]
+        RoleName: !Join [ '-', [!Ref StackPrefix, 'InitDBInstanceRole'] ]
         ManagedPolicyArns:
           - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+          - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
   
-  S3FullAccessInstanceProfile:
+  InitDBInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
-        - !Ref S3FullAccessRole
+        - !Ref InitDBInstanceRole
 
 Outputs:
   CustDBInstanceId:
