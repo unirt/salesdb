@@ -296,6 +296,12 @@ Outputs:
   CustSiteDBInstanceId:
     Description: CustSiteDBInstance ID
     Value: !Ref CustSiteDBInstance
+  CustDBInstanceAddress:
+    Description: CustDBInstance Address
+    Value: !GetAtt CustDBInstance.Endpoint.Address
+  CustSiteDBInstanceAddress:
+    Description: CustSiteDBInstance Address
+    Value: !GetAtt CustSiteDBInstance.Endpoint.Address
   S3BucketArn:
     Description: S3 Bucket ARN
     Value: !GetAtt S3Bucket.Arn
